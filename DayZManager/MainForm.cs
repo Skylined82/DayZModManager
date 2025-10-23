@@ -13,6 +13,8 @@ namespace DayZManager
         private Button btnHelp, btnBuild, btnSelectMods, btnStart, btnStop, btnPickMission, btnSettings, btnOpenRoot, btnPurgeLogs;
         private RichTextBox log;
         private SettingsModel? cfg;
+        private readonly Font _monoBold;
+
 
         // force smooth repainting on any Control you don't own
         private static void Smooth(Control c)
@@ -38,6 +40,14 @@ namespace DayZManager
             // belt & suspenders: if all else fails, invalidate while resizing
             c.Resize += (_, __) => c.Invalidate();
         }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _monoBold.Dispose();
+            }
+            base.Dispose(disposing);
+        }
 
 
         public MainForm()
@@ -59,7 +69,7 @@ namespace DayZManager
                      ControlStyles.OptimizedDoubleBuffer |
                      ControlStyles.ResizeRedraw, true);
             UpdateStyles();
-
+            _monoBold = new Font(UI.MonoFont, FontStyle.Bold);
 
             // header (dock top)
             var header = new HeaderPanel
@@ -188,8 +198,10 @@ namespace DayZManager
                 ForeColor = Color.Gainsboro,
                 Font = UI.MonoFont,
                 BorderStyle = BorderStyle.None,
-                Margin = new Padding(0)
+                Margin = new Padding(0),
+                HideSelection = true
             };
+
 
 
             rightCard.Controls.Add(log);
@@ -489,8 +501,14 @@ namespace DayZManager
                 log.SelectionColor = Color.Gainsboro;
                 log.SelectionFont = UI.MonoFont;
                 log.AppendText(line);
+
+                // auto-scroll to bottom
+                log.SelectionStart = log.TextLength;
+                log.ScrollToCaret();
+
                 log.SelectionColor = Color.Gainsboro; // reset
                 log.SelectionFont = UI.MonoFont;
+
             }
             if (InvokeRequired) BeginInvoke(new Action(append));
             else append();
@@ -519,25 +537,30 @@ namespace DayZManager
 
                 // label (bold + colored)
                 log.SelectionColor = (labelColor ?? Color.DeepSkyBlue);
-                log.SelectionFont = new Font(UI.MonoFont, FontStyle.Bold);
+                log.SelectionFont = _monoBold;
                 log.AppendText(label);
 
                 // tokens
                 log.SelectionFont = UI.MonoFont;
 
+                bool firstLine = true;
                 int currentLineLen = 0;
                 for (int i = 0; i < tokens.Count; i++)
                 {
                     string sep = (i == 0 ? "" : " ");
                     string tok = tokens[i];
 
-                    // wrap if too long
+                    int baseLen = indentWidth + (firstLine ? label.Length : 0);
                     int extra = sep.Length + tok.Length;
-                    if (currentLineLen > 0 && (indentWidth + label.Length + currentLineLen + extra) > wrapAt)
+
+                    // wrap if too long
+                    if ((baseLen + currentLineLen + extra) > wrapAt)
                     {
                         log.SelectionColor = Color.Gainsboro;
                         log.AppendText("\r\n" + new string(' ', indentWidth)); // align under timestamp
                         currentLineLen = 0;
+                        firstLine = false;
+                        baseLen = indentWidth;
                     }
 
                     // separator (plain)
@@ -551,8 +574,14 @@ namespace DayZManager
                     currentLineLen += extra;
                 }
 
+
                 log.SelectionColor = Color.Gainsboro;
                 log.AppendText("\r\n");
+
+                // auto-scroll to bottom (do this once per call)
+                log.SelectionStart = log.TextLength;
+                log.ScrollToCaret();
+
             }
 
             if (InvokeRequired) BeginInvoke(new Action(append));
@@ -775,7 +804,7 @@ namespace DayZManager
                     string outAddons = Path.Combine(outRoot, "addons");
                     Directory.CreateDirectory(outAddons);
 
-                    var args = $"\"{modDir.FullName}\" \"{outRoot}\" -clear -packonly";
+                    var args = $"\"{modDir.FullName}\" \"{outAddons}\" -clear -packonly";
                     Log($"Packing {modName} …");
                     var rc = RunProcess(ab, args, Path.GetDirectoryName(ab) ?? "",
                         onOut: a => Log(a), onErr: e => Log("[err] " + e));
@@ -850,6 +879,13 @@ namespace DayZManager
                 {
                     string n = name.StartsWith("@") ? name : "@" + name;
 
+                    var fromBuilt = Path.Combine(builtRoot, n);
+                    if (Directory.Exists(fromBuilt))
+                    {
+                        builtMods.Add(n);
+                        return fromBuilt;
+                    }
+
                     var fromWorkshop = !string.IsNullOrWhiteSpace(wk) ? Path.Combine(wk, n) : null;
                     if (!string.IsNullOrWhiteSpace(fromWorkshop) && Directory.Exists(fromWorkshop))
                     {
@@ -857,12 +893,6 @@ namespace DayZManager
                         return fromWorkshop;
                     }
 
-                    var fromBuilt = Path.Combine(builtRoot, n);
-                    if (Directory.Exists(fromBuilt))
-                    {
-                        builtMods.Add(n);
-                        return fromBuilt;
-                    }
 
                     // Not found in either; treat as “workshop-ish” for display purposes only.
                     workshopMods.Add(n);
@@ -871,6 +901,15 @@ namespace DayZManager
 
 
                 string modArg = selected.Length == 0 ? "" : string.Join(";", selected.Select(ResolveModPath));
+
+                // Guardrail: warn if any Built mod has no PBOs in \Addons (DayZ will ignore it)
+                foreach (var m in builtMods)
+                {
+                    var addonsPath = Path.Combine(builtRoot, m, "Addons");
+                    if (!Directory.Exists(addonsPath) || !Directory.EnumerateFiles(addonsPath, "*.pbo").Any())
+                        Log($"⚠️  {m} has no PBOs in \\Addons — DayZ will ignore it.");
+                }
+
 
                 string serverCfg = cfg.Resolve(cfg.ServerConfig);
                 string profiles = cfg.Resolve(cfg.ProfilesDir);
